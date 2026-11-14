@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import type { ResearchBrief } from '../lib/contracts/event-gtm';
 import type { AgentTask, AgentTimelineEvent, WorkspaceAgentRole, WorkspaceOpportunity } from '../lib/contracts/agent-workspace';
 import { dispatchClaimedTask } from '../lib/server/agents/dispatcher';
@@ -25,6 +25,18 @@ const brief: ResearchBrief = {
   topics: 'AI infrastructure', geography: 'San Francisco', from: '2026-10-01', to: '2026-12-31',
   budget: '2000', currency: 'USD', constraints: '',
 };
+
+// Every test in this file runs against an isolated temporary workspace database,
+// never the developer database at web/.data/workspace.sqlite. The runtime reads
+// workspace records (for example the company brand), so the claimed workspace must exist.
+const workspaceDirectory = mkdtempSync(join(tmpdir(), 'agent-runtime-'));
+process.env.EVENT_GTM_WORKSPACE_PATH = join(workspaceDirectory, 'workspace.sqlite');
+const seededWorkspaceId = createDemoSession().workspaceId;
+after(() => rmSync(workspaceDirectory, { recursive: true, force: true }));
+
+// Catalog-backed tests evaluate "upcoming" at the fixture date, not the wall clock.
+const FIXED_NOW = new Date('2026-09-28T12:00:00.000Z');
+const fixedClock = () => FIXED_NOW;
 
 function response(content: AnthropicResponse['content'], stop_reason = 'tool_use'): AnthropicResponse {
   return { id: 'msg_test', type: 'message', role: 'assistant', model: 'test-model', content, stop_reason };
@@ -51,7 +63,7 @@ function claim(role: WorkspaceAgentRole = 'lead', opportunityId: string | null =
   };
   return {
     ...task,
-    workspaceId: 'workspace_test', leaseOwner: 'worker_test', leaseUntil: '2026-09-28T12:05:00.000Z',
+    workspaceId: seededWorkspaceId, leaseOwner: 'worker_test', leaseUntil: '2026-09-28T12:05:00.000Z',
     run: { id: 'run_test', status: 'running' as const, briefVersion: 1, opportunityId, error: null, createdAt: task.createdAt, updatedAt: task.updatedAt },
     brief, briefVersion: 1, opportunity: null, opportunities: [], runTasks: [task], runEvents: [], draft: null,
   };
@@ -160,7 +172,7 @@ test('Scout country aliases are normalized to the catalog country labels', async
     })]),
     response([toolUse('done', 'completeTask', finalInput)]),
   ], requests);
-  await dispatchClaimedTask(claim('scout'), { repository: repositoryStub(captures), client });
+  await dispatchClaimedTask(claim('scout'), { repository: repositoryStub(captures), client, now: fixedClock });
   const completion = captures.completed[0] as { events?: Array<{ kind: string; metadata: Record<string, unknown> }> };
   const searchEvents = completion.events?.filter(event => event.kind === 'catalog_search') ?? [];
   const searchEvent = searchEvents[0];
@@ -334,6 +346,15 @@ test('Producer can draft a private conditional concept from a useful simulated r
       host: 'Example Co', cta: 'Request confirmed workshop details.', date: '', timezone: '', location: '',
       productionBrief: 'Private and nonbinding. Sponsorship is $5,000; workshop pricing is pending confirmation.',
       sourceRefs: ['reply-conditional'],
+      experience: {
+        venue: 'A small private room; selection pending organizer confirmation.',
+        guests: 'Infrastructure founders invited by the host.',
+        atmosphere: 'Focused working session.',
+        artDirection: 'Simple editorial cover in the brand palette, no text.',
+        foodAndDrink: 'Light refreshments, to be confirmed.',
+        budgetGuidance: 'Workshop price is pending; sponsorship at $5,000 exceeds the $2,000 budget.',
+      },
+      coverImageUrl: '',
     })]),
     response([toolUse('done', 'completeTask', { ...finalInput, nextRecommendedAction: 'produce' })]),
   ]);
@@ -347,7 +368,7 @@ test('Producer can draft a private conditional concept from a useful simulated r
 
 test('Scout can stage no more than three evidence-backed opportunities per run', async () => {
   const filters = { q: '', from: '2026-10-01', to: '2030-12-31', country: '', city: '', scope: 'upcoming' as const, sector: 'tech' as const, page: 1, pageSize: 30 };
-  const candidates = searchEvents(filters).events
+  const candidates = searchEvents(filters, FIXED_NOW).events
     .map(event => ({ id: event.id, evidence: getEventDetail(event.id)?.evidence ?? [] }))
     .filter(event => event.evidence.length > 0)
     .slice(0, 4);
@@ -368,7 +389,7 @@ test('Scout can stage no more than three evidence-backed opportunities per run',
     })]),
     response([toolUse('done', 'completeTask', finalInput)]),
   ], requests);
-  await dispatchClaimedTask(claim('scout'), { repository: repositoryStub(captures), client });
+  await dispatchClaimedTask(claim('scout'), { repository: repositoryStub(captures), client, now: fixedClock });
   const completion = captures.completed[0] as { opportunityCreates?: Array<{ catalogEventId: string }> };
   assert.equal(completion.opportunityCreates?.length, 3);
   assert.equal(requests.length, 10, 'serial search, evidence, saves, follow-up, and finalization must complete');

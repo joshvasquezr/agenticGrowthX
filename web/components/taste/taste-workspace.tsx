@@ -130,12 +130,13 @@ export function TasteWorkspace({ preparedDemo = false }: { preparedDemo?: boolea
   const starting = useRef(false);
   const [preparing, setPreparing] = useState(false);
   const responseText = answer || team.error || team.answer;
-  const restored = useRef(false);
-  useEffect(() => {
-    if (restored.current || !team.workspace) return;
-    restored.current = true;
+  // Restore the saved brief once, when the first server snapshot arrives. Adjusting
+  // state during render (guarded) avoids a cascading effect render.
+  const [restored, setRestored] = useState(false);
+  if (!restored && team.workspace) {
+    setRestored(true);
     if (team.workspace.latestBrief) { setBrief(briefFromSaved(team.workspace.latestBrief)); setHasBrief(true); setView('plan'); }
-  }, [team.workspace]);
+  }
   useEffect(() => {
     // Hydrate the browser-only draft cache after the server-rendered welcome screen.
     // eslint-disable-next-line react-hooks/set-state-in-effect
