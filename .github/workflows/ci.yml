@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CATALOG: event-gtm-2026-09-28/scale-expansion-20260928/dataset.sqlite
+  CATALOG_SHA256: 8e197337639981996c70f9225f0c4e9e7cbca6c358d2bc8ac31e603502b850cc
+
+jobs:
+  verify:
+    name: Typecheck, lint, test, build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # No provider credentials are configured: tests use scripted model clients and
+    # temporary workspace databases; no paid API is called.
+    env:
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.2'
+
+      - name: Enable pnpm (version pinned by packageManager)
+        run: corepack enable
+
+      - name: Install dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Restore research catalog
+        run: |
+          gunzip -k "$CATALOG.gz"
+          echo "$CATALOG_SHA256  $CATALOG" | sha256sum -c -
+
+      - name: Typecheck
+        working-directory: web
+        run: pnpm typecheck
+
+      - name: Lint
+        working-directory: web
+        run: pnpm lint
+
+      - name: Unit and integration tests
+        working-directory: web
+        run: pnpm test
+
+      - name: Production build
+        working-directory: web
+        run: pnpm build
+
+      # Browser smoke against the production build. A fresh temporary workspace DB keeps
+      # it isolated from any development data; no provider credentials are configured.
+      # Uses the Google Chrome preinstalled on GitHub's Ubuntu runners (channel: 'chrome').
+      - name: Start production server (fresh workspace DB)
+        working-directory: web
+        run: |
+          mkdir -p "$RUNNER_TEMP/smoke-workspace"
+          EVENT_GTM_WORKSPACE_PATH="$RUNNER_TEMP/smoke-workspace/workspace.sqlite" \
+          EVENT_GTM_DEMO_ENABLED=true \
+            nohup pnpm start > "$RUNNER_TEMP/server.log" 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl -sf http://localhost:3010/api/health > /dev/null; then echo "Server ready"; exit 0; fi
+            sleep 1
+          done
+          echo "Server did not become healthy"; cat "$RUNNER_TEMP/server.log"; exit 1
+
+      - name: Browser smoke test
+        working-directory: web
+        run: pnpm test:browser
+
+      - name: Server log
+        if: failure()
+        run: cat "$RUNNER_TEMP/server.log" || true
+
+      - name: Upload smoke screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-smoke-screenshots
+          path: web/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Catalog unchanged
+        run: echo "$CATALOG_SHA256  $CATALOG" | sha256sum -c -

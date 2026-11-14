@@ -7,6 +7,7 @@ export interface AgentDispatcherOptions {
   repository: AgentRuntimeRepository;
   client?: AgentModelClient;
   fetcher?: typeof fetch;
+  now?: () => Date;
 }
 
 /** Dispatch exactly the role stored on a leased task; client input cannot pick a role. */
@@ -23,5 +24,6 @@ export async function dispatchClaimedTask(claim: ClaimedTask, options: AgentDisp
     repository: options.repository,
     client: options.client,
     fetcher: options.fetcher,
+    now: options.now,
   });
 }

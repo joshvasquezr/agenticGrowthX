@@ -485,7 +485,7 @@ function toolHandler(
         q: String(args.q ?? '').slice(0, 180), from: String(args.from ?? ''), to: String(args.to ?? ''), country, city,
         scope: 'upcoming', sector: 'tech', page: 1, pageSize: 30,
       };
-      let events = searchEvents(filters).events;
+      let events = searchEvents(filters, now()).events;
       if (city) events = events.filter(event => event.city?.toLocaleLowerCase().includes(city.toLocaleLowerCase()));
       const remaining = Math.max(0, MAX_CANDIDATES - state.candidates.size);
       const limited = events.filter(event => !state.candidates.has(event.id)).slice(0, remaining);
